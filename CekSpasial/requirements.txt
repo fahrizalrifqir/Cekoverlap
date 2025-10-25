@@ -1,7 +1,8 @@
 streamlit
 geopandas
+folium
 contextily
 matplotlib
 shapely
-folium
-streamlit-folium
+fiona
+pyproj
