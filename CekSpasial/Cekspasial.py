@@ -1,143 +1,82 @@
+# streamlit_overlay_geojson.py
 import streamlit as st
 import geopandas as gpd
 import pandas as pd
-import io, zipfile, tempfile
+import folium
+from shapely.geometry import Polygon, MultiPolygon
+from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
+import contextily as ctx
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
-import contextily as ctx
-from shapely.geometry import Polygon
+import io
 
 st.set_page_config(page_title="Overlay Tapak Proyek", layout="wide")
 
-st.title("🗺️ Overlay Tapak Proyek dengan PIPPIB / Kawasan Hutan")
+st.title("🗺️ Analisis Overlay Tapak Proyek dengan PIPPIB / Kawasan Hutan")
 
-# --- Pilihan Dataset ---
+# Pilihan overlay
 overlay_option = st.radio(
-    "Pilih dataset untuk overlay:",
-    ("PIPPIB", "Kawasan Hutan"),
+    "Pilih Layer Overlay:",
+    ["PIPPIB", "Kawasan Hutan"],
     horizontal=True
 )
 
-# --- Upload Shapefile Tapak ---
-uploaded_zip = st.file_uploader("Upload file SHP Tapak Proyek (.zip)", type=["zip"])
+# Load data dari Google Drive (format GeoJSON)
+url_pippib = "https://drive.google.com/uc?id=1trh7h1SG1-AcuRfyaUqJq-qMJWKPiaez"
+url_kawasan = "https://drive.google.com/uc?id=11cFQG0jdDauc0mOha8AiTndB-AqRB7GA"
 
-def load_zipped_shp(uploaded_zip):
-    """Membaca shapefile dari file zip upload Streamlit."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with zipfile.ZipFile(uploaded_zip, "r") as zip_ref:
-            zip_ref.extractall(tmpdir)
-        shp_files = [f for f in zip_ref.namelist() if f.endswith(".shp")]
-        if len(shp_files) == 0:
-            return None
-        shp_path = f"{tmpdir}/{shp_files[0]}"
-        gdf = gpd.read_file(shp_path)
-        return gdf
-
-# --- Load dataset dasar (PIPPIB / Kawasan Hutan) ---
 @st.cache_data
-def load_reference_data(option):
+def load_overlay_data(option):
     if option == "PIPPIB":
-        gdf = gpd.read_file("data/pippib.shp")
+        gdf = gpd.read_file(url_pippib)
     else:
-        gdf = gpd.read_file("data/kawasan_hutan.shp")
-    return gdf.to_crs(epsg=4326)
+        gdf = gpd.read_file(url_kawasan)
+    gdf = gdf.to_crs(epsg=4326)
+    return gdf
 
-# --- Jika file diupload ---
-if uploaded_zip is not None:
-    gdf_tapak = load_zipped_shp(uploaded_zip)
+gdf_overlay = load_overlay_data(overlay_option)
 
-    if gdf_tapak is not None:
-        st.success("✅ Shapefile Tapak berhasil dimuat.")
+# Upload shapefile tapak proyek (ZIP)
+uploaded_file = st.file_uploader("Unggah file SHP tapak proyek (.zip)", type=["zip"])
+
+if uploaded_file:
+    with st.spinner("Membaca data tapak proyek..."):
+        gdf_tapak = gpd.read_file(f"zip://{uploaded_file}")
         gdf_tapak = gdf_tapak.to_crs(epsg=4326)
+    
+    # Hitung overlap
+    with st.spinner("Menghitung area overlap..."):
+        gdf_overlay_valid = gdf_overlay[gdf_overlay.is_valid]
+        overlap = gpd.overlay(gdf_tapak, gdf_overlay_valid, how="intersection")
+    
+    # Hitung luas overlap (hektar)
+    overlap = overlap.to_crs(epsg=3857)
+    overlap["Luas_ha"] = overlap.geometry.area / 10000
+    
+    st.success(f"✅ Ditemukan {len(overlap)} area overlap, total luas {overlap['Luas_ha'].sum():,.2f} ha")
 
-        # Muat dataset pembanding
-        gdf_ref = load_reference_data(overlay_option)
+    # --- Peta interaktif ---
+    st.subheader("🧭 Peta Interaktif")
+    m = folium.Map(location=[-2, 117], zoom_start=5)
+    folium.GeoJson(gdf_overlay, name=overlay_option, style_function=lambda x: {"color": "green", "weight": 1}).add_to(m)
+    folium.GeoJson(gdf_tapak, name="Tapak Proyek", style_function=lambda x: {"color": "blue", "weight": 2}).add_to(m)
+    folium.GeoJson(overlap, name="Overlap", style_function=lambda x: {"color": "red", "fillOpacity": 0.4}).add_to(m)
+    folium.LayerControl().add_to(m)
+    st_folium(m, height=500)
 
-        # --- Overlay ---
-        gdf_overlap = gpd.overlay(gdf_tapak, gdf_ref, how="intersection")
+    # --- Layout PNG ---
+    st.subheader("🖼️ Download Layout Peta PNG")
 
-        if not gdf_overlap.empty:
-            gdf_overlap["luas_m2"] = gdf_overlap.geometry.area * (111_319.9 ** 2)
-            total_luas = gdf_overlap["luas_m2"].sum()
+    try:
+        gdf_tapak_3857 = gdf_tapak.to_crs(epsg=3857)
+        gdf_overlay_3857 = gdf_overlay.to_crs(epsg=3857)
+        overlap_3857 = overlap.to_crs(epsg=3857)
 
-            st.write(f"### Luas Overlap: {total_luas:,.2f} m²")
-            st.dataframe(gdf_overlap.drop(columns="geometry").head(10))
+        xmin, ymin, xmax, ymax = gdf_tapak_3857.total_bounds
+        fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
+        gdf_overlay_3857.plot(ax=ax, facecolor="none", edgecolor="green", linewidth=1)
+        gdf_tapak_3857.plot(ax=ax, facecolor="blue", alpha=0.3)
+        overlap_3857.plot(ax=ax, facecolor="red", alpha=0.4)
 
-            # --- Preview Peta (folium) ---
-            import folium
-            from streamlit_folium import st_folium
-
-            center = gdf_tapak.geometry.centroid.iloc[0].y, gdf_tapak.geometry.centroid.iloc[0].x
-            m = folium.Map(location=center, zoom_start=12)
-            folium.GeoJson(gdf_ref, name=overlay_option, style_function=lambda x: {
-                "color": "green" if overlay_option == "Kawasan Hutan" else "blue",
-                "fillOpacity": 0.1
-            }).add_to(m)
-            folium.GeoJson(gdf_tapak, name="Tapak Proyek", style_function=lambda x: {
-                "color": "red", "fillOpacity": 0.4
-            }).add_to(m)
-            folium.LayerControl().add_to(m)
-            st_folium(m, width=700, height=500)
-
-            # --- Layout PNG (Matplotlib) ---
-            st.markdown("### 📷 Download Layout PNG")
-
-            try:
-                gdf_ref_3857 = gdf_ref.to_crs(epsg=3857)
-                gdf_tapak_3857 = gdf_tapak.to_crs(epsg=3857)
-                gdf_overlap_3857 = gdf_overlap.to_crs(epsg=3857)
-
-                xmin, ymin, xmax, ymax = gdf_tapak_3857.total_bounds
-                fig, ax = plt.subplots(figsize=(10, 10), dpi=150)
-
-                # Plot layers
-                color_ref = "blue" if overlay_option == "PIPPIB" else "green"
-                gdf_ref_3857.plot(ax=ax, facecolor="none", edgecolor=color_ref, linewidth=1)
-                gdf_tapak_3857.plot(ax=ax, facecolor="red", alpha=0.4)
-                gdf_overlap_3857.plot(ax=ax, facecolor="yellow", alpha=0.5)
-
-                ctx.add_basemap(ax, crs=gdf_tapak_3857.crs, source=ctx.providers.Esri.WorldImagery)
-
-                ax.set_xlim(xmin - (xmax - xmin) * 0.05, xmax + (xmax - xmin) * 0.05)
-                ax.set_ylim(ymin - (ymax - ymin) * 0.05, ymax + (ymax - ymin) * 0.05)
-                ax.set_title(f"Peta Overlay Tapak Proyek dengan {overlay_option}", fontsize=14)
-                ax.axis("off")
-
-                # Legenda Dinamis
-                legend_elements = [
-                    mpatches.Patch(facecolor=color_ref, edgecolor=color_ref, alpha=0.3, label=overlay_option),
-                    mpatches.Patch(facecolor="red", edgecolor="red", alpha=0.4, label="Tapak Proyek"),
-                    mpatches.Patch(facecolor="yellow", edgecolor="yellow", alpha=0.5, label="Overlap Area")
-                ]
-                ax.legend(
-                    handles=legend_elements,
-                    loc="upper right",
-                    fontsize=9,
-                    frameon=True,
-                    facecolor="white",
-                    edgecolor="black",
-                    title="Keterangan",
-                    title_fontsize=9
-                )
-
-                buf = io.BytesIO()
-                plt.savefig(buf, format="png", bbox_inches="tight", dpi=200)
-                buf.seek(0)
-                plt.close(fig)
-
-                st.download_button(
-                    "⬇️ Download Peta PNG",
-                    data=buf,
-                    file_name=f"Peta_Overlay_{overlay_option}.png",
-                    mime="image/png"
-                )
-            except Exception as e:
-                st.error(f"Gagal membuat peta: {e}")
-        else:
-            st.warning("⚠️ Tidak ada area yang tumpang tindih (overlap).")
-    else:
-        st.error("Gagal membaca file SHP dari ZIP.")
-else:
-    st.info("Silakan upload shapefile tapak proyek (.zip) terlebih dahulu.")
-
+        ctx.add_basemap_
