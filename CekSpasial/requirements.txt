@@ -1,0 +1,7 @@
+streamlit
+geopandas
+contextily
+matplotlib
+shapely
+folium
+streamlit-folium
