@@ -5,35 +5,74 @@ from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
 import contextily as ctx
 import matplotlib.patches as mpatches
+import requests
+import tempfile
+import os
 import io
 
+# --- Konfigurasi Halaman ---
 st.set_page_config(page_title="Overlay Tapak Proyek", layout="wide")
 
 st.title("🗺️ Analisis Overlay Tapak Proyek dengan PIPPIB / Kawasan Hutan")
 
-# --- PILIHAN OVERLAY ---
+# --- Pilihan Overlay ---
 overlay_option = st.radio(
     "Pilih Layer Overlay:",
     ["PIPPIB", "Kawasan Hutan"],
     horizontal=True
 )
 
-# --- LINK GEOJSON DARI GOOGLE DRIVE (DIRECT FORMAT) ---
+# --- Link langsung file GeoJSON di Google Drive ---
 url_pippib = "https://drive.google.com/uc?id=1trh7h1SG1-AcuRfyaUqJq-qMJWKPiaez"
 url_kawasan = "https://drive.google.com/uc?id=11cFQG0jdDauc0mOha8AiTndB-AqRB7GA"
 
+
+# --- Fungsi untuk mengunduh dan membaca GeoJSON ---
 @st.cache_data
 def load_overlay_data(option):
     if option == "PIPPIB":
-        gdf = gpd.read_file(url_pippib)
+        url = url_pippib
     else:
-        gdf = gpd.read_file(url_kawasan)
-    gdf = gdf.to_crs(epsg=4326)
+        url = url_kawasan
+
+    st.info(f"📥 Mengunduh data {option} dari Google Drive, mohon tunggu...")
+
+    response = requests.get(url, stream=True)
+    total_length = int(response.headers.get("content-length", 0))
+    progress_bar = st.progress(0)
+
+    downloaded = 0
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".geojson") as tmpfile:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                tmpfile.write(chunk)
+                downloaded += len(chunk)
+                if total_length:
+                    progress = int(downloaded / total_length * 100)
+                    progress_bar.progress(progress)
+        tmp_path = tmpfile.name
+
+    progress_bar.empty()
+
+    try:
+        gdf = gpd.read_file(tmp_path)
+        gdf = gdf.to_crs(epsg=4326)
+    finally:
+        os.remove(tmp_path)
+
     return gdf
 
-gdf_overlay = load_overlay_data(overlay_option)
 
-# --- UPLOAD TAPAK PROYEK ---
+# --- Muat layer overlay (PIPPIB / Kawasan Hutan) ---
+try:
+    gdf_overlay = load_overlay_data(overlay_option)
+    st.success(f"✅ Layer {overlay_option} berhasil dimuat, total {len(gdf_overlay)} fitur.")
+except Exception as e:
+    st.error(f"Gagal memuat layer {overlay_option}: {e}")
+    st.stop()
+
+
+# --- Upload Tapak Proyek ---
 uploaded_file = st.file_uploader("Unggah file SHP tapak proyek (.zip)", type=["zip"])
 
 if uploaded_file:
@@ -42,18 +81,19 @@ if uploaded_file:
         gdf_tapak = gpd.read_file(f"zip://{uploaded_file}")
         gdf_tapak = gdf_tapak.to_crs(epsg=4326)
 
+        # --- Analisis Overlap ---
         st.info("🔎 Menghitung area overlap...")
         gdf_overlay_valid = gdf_overlay[gdf_overlay.is_valid]
         overlap = gpd.overlay(gdf_tapak, gdf_overlay_valid, how="intersection")
 
-        # Hitung luas overlap (ha)
+        # --- Hitung luas overlap (ha) ---
         overlap = overlap.to_crs(epsg=3857)
         overlap["Luas_ha"] = overlap.geometry.area / 10000
         total_luas = overlap["Luas_ha"].sum()
 
         st.success(f"✅ Ditemukan {len(overlap)} area overlap, total luas {total_luas:,.2f} ha")
 
-        # --- PETA INTERAKTIF ---
+        # --- Peta Interaktif ---
         st.subheader("🧭 Peta Interaktif")
         m = folium.Map(location=[-2, 117], zoom_start=5)
         folium.GeoJson(
@@ -69,9 +109,9 @@ if uploaded_file:
             style_function=lambda x: {"color": "red", "fillOpacity": 0.4}
         ).add_to(m)
         folium.LayerControl().add_to(m)
-        st_folium(m, height=500)
+        st_folium(m, height=550, width=900)
 
-        # --- LAYOUT PNG ---
+        # --- Layout PNG ---
         st.subheader("🖼️ Download Layout Peta PNG")
 
         try:
@@ -93,6 +133,12 @@ if uploaded_file:
             ax.axis("off")
             ax.set_title(f"Peta Overlay Tapak Proyek dengan {overlay_option}", fontsize=14, pad=15)
 
+            # Garis bawah judul dan outline peta
+            ax.axhline(y=ymax + (ymax - ymin) * 0.05, color='black', linewidth=2, xmin=0, xmax=1)
+            for spine in ax.spines.values():
+                spine.set_edgecolor('black')
+                spine.set_linewidth(1.5)
+
             # Legenda dinamis
             legend_elements = [
                 mpatches.Patch(facecolor="blue", alpha=0.3, label="Tapak Proyek"),
@@ -101,11 +147,7 @@ if uploaded_file:
             ]
             ax.legend(handles=legend_elements, loc="upper right", fontsize=9, frameon=True)
 
-            # Outline hitam di sekeliling peta
-            for spine in ax.spines.values():
-                spine.set_edgecolor('black')
-                spine.set_linewidth(1.5)
-
+            # Simpan ke buffer PNG
             buf = io.BytesIO()
             plt.savefig(buf, format="png", bbox_inches="tight", dpi=200)
             buf.seek(0)
@@ -122,7 +164,7 @@ if uploaded_file:
             st.error(f"Gagal membuat layout PNG: {e}")
 
     except Exception as e:
-        st.error(f"Gagal memproses file: {e}")
+        st.error(f"Gagal memproses file SHP: {e}")
 
 else:
     st.info("📤 Unggah file tapak proyek (.zip) terlebih dahulu untuk mulai analisis.")
