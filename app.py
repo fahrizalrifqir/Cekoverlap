@@ -22,7 +22,7 @@ if uploaded_file:
 
         st.info("📂 Membaca file KML...")
         try:
-            # Baca KML
+            # Baca file KML
             gdf = gpd.read_file(input_path, driver='KML')
 
             # Filter hanya Polygon dan MultiPolygon
@@ -33,10 +33,20 @@ if uploaded_file:
             else:
                 st.success(f"✅ Ditemukan {len(polygon_gdf)} fitur Polygon.")
 
-                # --- Peta interaktif dengan Folium ---
+                # --- Peta interaktif ---
                 st.subheader("🗺️ Pratinjau Polygon")
-                m = folium.Map(location=[0, 120], zoom_start=5)
-                folium.GeoJson(polygon_gdf).add_to(m)
+
+                # Buat peta dengan lokasi awal di tengah Indonesia
+                m = folium.Map(location=[-2, 118], zoom_start=5)
+
+                # Tambahkan layer polygon ke peta
+                folium.GeoJson(polygon_gdf, name="Polygon Layer").add_to(m)
+
+                # Zoom otomatis ke bounding box layer
+                bounds = polygon_gdf.total_bounds  # [minx, miny, maxx, maxy]
+                m.fit_bounds([[bounds[1], bounds[0]], [bounds[3], bounds[2]]])
+
+                # Tampilkan peta di Streamlit
                 st_folium(m, width=700, height=500)
 
                 # Simpan ke shapefile
@@ -52,6 +62,7 @@ if uploaded_file:
                         for file in files:
                             zipf.write(os.path.join(root, file), file)
 
+                # Tombol download
                 with open(zip_path, "rb") as fp:
                     st.download_button(
                         label="⬇️ Download Shapefile (.zip)",
