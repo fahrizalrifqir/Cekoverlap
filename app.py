@@ -3,7 +3,9 @@ import geopandas as gpd
 import tempfile
 import os
 import zipfile
+import folium
 from shapely.geometry import Polygon, MultiPolygon
+from streamlit_folium import st_folium
 
 st.set_page_config(page_title="KML to SHP Converter", page_icon="🌍")
 
@@ -20,7 +22,7 @@ if uploaded_file:
 
         st.info("📂 Membaca file KML...")
         try:
-            # Baca file KML menggunakan driver 'KML'
+            # Baca KML
             gdf = gpd.read_file(input_path, driver='KML')
 
             # Filter hanya Polygon dan MultiPolygon
@@ -30,7 +32,12 @@ if uploaded_file:
                 st.warning("⚠️ Tidak ditemukan fitur Polygon di file KML ini.")
             else:
                 st.success(f"✅ Ditemukan {len(polygon_gdf)} fitur Polygon.")
-                st.map(polygon_gdf)
+
+                # --- Peta interaktif dengan Folium ---
+                st.subheader("🗺️ Pratinjau Polygon")
+                m = folium.Map(location=[0, 120], zoom_start=5)
+                folium.GeoJson(polygon_gdf).add_to(m)
+                st_folium(m, width=700, height=500)
 
                 # Simpan ke shapefile
                 shp_dir = os.path.join(tmpdir, "output_shp")
@@ -38,14 +45,13 @@ if uploaded_file:
                 shp_path = os.path.join(shp_dir, "data.shp")
                 polygon_gdf.to_file(shp_path, driver="ESRI Shapefile")
 
-                # Kompres ke ZIP
+                # Kompres ke zip
                 zip_path = os.path.join(tmpdir, "shapefile.zip")
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
                     for root, _, files in os.walk(shp_dir):
                         for file in files:
                             zipf.write(os.path.join(root, file), file)
 
-                # Tombol download
                 with open(zip_path, "rb") as fp:
                     st.download_button(
                         label="⬇️ Download Shapefile (.zip)",
