@@ -1,9 +1,0 @@
-streamlit
-geopandas
-folium
-contextily
-matplotlib
-shapely
-fiona
-pyproj
-requests
